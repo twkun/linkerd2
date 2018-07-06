@@ -7,7 +7,6 @@ import (
 
 	common "github.com/runconduit/conduit/controller/gen/common"
 	pb "github.com/runconduit/conduit/controller/gen/proxy/destination"
-	"github.com/runconduit/conduit/pkg/addr"
 	pkgK8s "github.com/runconduit/conduit/pkg/k8s"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,16 +19,43 @@ type podExpected struct {
 	phase                 v1.PodPhase
 }
 
-type listenerExpected struct {
-	pods           []podExpected
-	address        common.TcpAddress
-	listenerLabels map[string]string
-	addressLabels  map[string]string
-}
+var (
+	addedAddress1 = common.TcpAddress{
+		Ip:   &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 1}},
+		Port: 1,
+	}
 
-func noPodsByIp(ip string) ([]*v1.Pod, error) {
-	return make([]*v1.Pod, 0), nil
-}
+	addedAddress2 = common.TcpAddress{
+		Ip:   &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 2}},
+		Port: 2,
+	}
+
+	removedAddress1 = common.TcpAddress{
+		Ip:   &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 100}},
+		Port: 100,
+	}
+
+	pod1 = &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod1",
+			Namespace: "ns",
+		},
+	}
+
+	pod2 = &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod2",
+			Namespace: "ns",
+		},
+	}
+
+	add = map[common.TcpAddress]*v1.Pod{
+		addedAddress1: pod1,
+		addedAddress2: pod2,
+	}
+
+	remove = []common.TcpAddress{removedAddress1}
+)
 
 func defaultOwnerKindAndName(pod *v1.Pod) (string, string) {
 	return "", ""
@@ -41,15 +67,10 @@ func TestEndpointListener(t *testing.T) {
 
 		listener := &endpointListener{
 			stream:           mockGetServer,
-			podsByIp:         noPodsByIp,
 			ownerKindAndName: defaultOwnerKindAndName,
 		}
 
-		addedAddress1 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 1}}, Port: 1}
-		addedAddress2 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 2}}, Port: 2}
-		removedAddress1 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 100}}, Port: 100}
-
-		listener.Update([]common.TcpAddress{addedAddress1, addedAddress2}, []common.TcpAddress{removedAddress1})
+		listener.Update(add, remove)
 
 		expectedNumUpdates := 2
 		actualNumUpdates := len(mockGetServer.updatesReceived)
@@ -63,15 +84,10 @@ func TestEndpointListener(t *testing.T) {
 
 		listener := &endpointListener{
 			stream:           mockGetServer,
-			podsByIp:         noPodsByIp,
 			ownerKindAndName: defaultOwnerKindAndName,
 		}
 
-		addedAddress1 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 1}}, Port: 1}
-		addedAddress2 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 2}}, Port: 2}
-		removedAddress1 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 100}}, Port: 100}
-
-		listener.Update([]common.TcpAddress{addedAddress1, addedAddress2}, []common.TcpAddress{removedAddress1})
+		listener.Update(add, remove)
 
 		addressesAdded := mockGetServer.updatesReceived[0].GetAdd().Addrs
 		actualNumberOfAdded := len(addressesAdded)
@@ -102,7 +118,6 @@ func TestEndpointListener(t *testing.T) {
 		mockGetServer := &mockDestination_GetServer{updatesReceived: []*pb.Update{}, contextToReturn: context}
 		listener := &endpointListener{
 			stream:           mockGetServer,
-			podsByIp:         noPodsByIp,
 			ownerKindAndName: defaultOwnerKindAndName,
 		}
 
@@ -127,8 +142,6 @@ func TestEndpointListener(t *testing.T) {
 		expectedNamespace := "this-namespace"
 		expectedReplicationControllerName := "rc-name"
 
-		addedAddress1 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 666}}, Port: 1}
-		ipForAddr1 := addr.IPToString(addedAddress1.Ip)
 		podForAddedAddress1 := &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      expectedPodName,
@@ -141,14 +154,9 @@ func TestEndpointListener(t *testing.T) {
 				Phase: v1.PodRunning,
 			},
 		}
-		addedAddress2 := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 222}}, Port: 22}
-		podIndex := func(ip string) ([]*v1.Pod, error) {
-			return map[string][]*v1.Pod{ipForAddr1: []*v1.Pod{podForAddedAddress1}}[ip], nil
-		}
 
 		mockGetServer := &mockDestination_GetServer{updatesReceived: []*pb.Update{}}
 		listener := &endpointListener{
-			podsByIp:         podIndex,
 			ownerKindAndName: defaultOwnerKindAndName,
 			labels: map[string]string{
 				"service":   expectedServiceName,
@@ -157,7 +165,11 @@ func TestEndpointListener(t *testing.T) {
 			stream: mockGetServer,
 		}
 
-		listener.Update([]common.TcpAddress{addedAddress1, addedAddress2}, nil)
+		add := map[common.TcpAddress]*v1.Pod{
+			addedAddress1: podForAddedAddress1,
+			addedAddress2: pod2,
+		}
+		listener.Update(add, nil)
 
 		actualGlobalMetricLabels := mockGetServer.updatesReceived[0].GetAdd().MetricLabels
 		expectedGlobalMetricLabels := map[string]string{"namespace": expectedNamespace, "service": expectedServiceName}
@@ -185,9 +197,7 @@ func TestEndpointListener(t *testing.T) {
 			ControllerNs: "conduit-namespace",
 		}
 
-		addedAddress := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 666}}, Port: 1}
-		ipForAddr := addr.IPToString(addedAddress.Ip)
-		podForAddedAddress := &v1.Pod{
+		podForAddedAddress1 := &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      expectedPodName,
 				Namespace: expectedPodNamespace,
@@ -201,23 +211,21 @@ func TestEndpointListener(t *testing.T) {
 			},
 		}
 
-		podIndex := func(ip string) ([]*v1.Pod, error) {
-			return map[string][]*v1.Pod{ipForAddr: []*v1.Pod{podForAddedAddress}}[ip], nil
-		}
-
 		ownerKindAndName := func(pod *v1.Pod) (string, string) {
 			return "deployment", expectedPodDeployment
 		}
 
 		mockGetServer := &mockDestination_GetServer{updatesReceived: []*pb.Update{}}
 		listener := &endpointListener{
-			podsByIp:         podIndex,
 			ownerKindAndName: ownerKindAndName,
 			stream:           mockGetServer,
 			enableTLS:        true,
 		}
 
-		listener.Update([]common.TcpAddress{addedAddress}, nil)
+		add := map[common.TcpAddress]*v1.Pod{
+			addedAddress1: podForAddedAddress1,
+		}
+		listener.Update(add, nil)
 
 		addrs := mockGetServer.updatesReceived[0].GetAdd().GetAddrs()
 		if len(addrs) != 1 {
@@ -236,9 +244,7 @@ func TestEndpointListener(t *testing.T) {
 		expectedConduitNamespace := "conduit-namespace"
 		expectedPodDeployment := "pod-deployment"
 
-		addedAddress := common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 666}}, Port: 1}
-		ipForAddr := addr.IPToString(addedAddress.Ip)
-		podForAddedAddress := &v1.Pod{
+		podForAddedAddress1 := &v1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      expectedPodName,
 				Namespace: expectedPodNamespace,
@@ -252,22 +258,20 @@ func TestEndpointListener(t *testing.T) {
 			},
 		}
 
-		podIndex := func(ip string) ([]*v1.Pod, error) {
-			return map[string][]*v1.Pod{ipForAddr: []*v1.Pod{podForAddedAddress}}[ip], nil
-		}
-
 		ownerKindAndName := func(pod *v1.Pod) (string, string) {
 			return "deployment", expectedPodDeployment
 		}
 
 		mockGetServer := &mockDestination_GetServer{updatesReceived: []*pb.Update{}}
 		listener := &endpointListener{
-			podsByIp:         podIndex,
 			ownerKindAndName: ownerKindAndName,
 			stream:           mockGetServer,
 		}
 
-		listener.Update([]common.TcpAddress{addedAddress}, nil)
+		add := map[common.TcpAddress]*v1.Pod{
+			addedAddress1: podForAddedAddress1,
+		}
+		listener.Update(add, nil)
 
 		addrs := mockGetServer.updatesReceived[0].GetAdd().GetAddrs()
 		if len(addrs) != 1 {
@@ -276,103 +280,6 @@ func TestEndpointListener(t *testing.T) {
 
 		if addrs[0].TlsIdentity != nil {
 			t.Fatalf("Expected no TlsIdentity to be sent, but got [%v]", addrs[0].TlsIdentity)
-		}
-	})
-
-	t.Run("It only returns pods in a running state", func(t *testing.T) {
-		expectations := []listenerExpected{
-			listenerExpected{
-				pods: []podExpected{
-					podExpected{
-						pod:                   "pod1",
-						namespace:             "this-namespace",
-						replicationController: "rc-name",
-						phase: v1.PodPending,
-					},
-				},
-				address: common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 666}}, Port: 1},
-				listenerLabels: map[string]string{
-					"service":   "service-name",
-					"namespace": "this-namespace",
-				},
-				addressLabels: map[string]string{},
-			},
-			listenerExpected{
-				pods: []podExpected{
-					podExpected{
-						pod:                   "pod1",
-						namespace:             "this-namespace",
-						replicationController: "rc-name",
-						phase: v1.PodPending,
-					},
-					podExpected{
-						pod:                   "pod2",
-						namespace:             "this-namespace",
-						replicationController: "rc-name",
-						phase: v1.PodRunning,
-					},
-					podExpected{
-						pod:                   "pod3",
-						namespace:             "this-namespace",
-						replicationController: "rc-name",
-						phase: v1.PodSucceeded,
-					},
-				},
-				address: common.TcpAddress{Ip: &common.IPAddress{Ip: &common.IPAddress_Ipv4{Ipv4: 666}}, Port: 1},
-				listenerLabels: map[string]string{
-					"service":   "service-name",
-					"namespace": "this-namespace",
-				},
-				addressLabels: map[string]string{
-					"pod": "pod2",
-					"replication_controller": "rc-name",
-				},
-			},
-		}
-
-		for _, exp := range expectations {
-			backingMap := map[string][]*v1.Pod{}
-
-			for _, pod := range exp.pods {
-				ipForAddr := addr.IPToString(exp.address.Ip)
-				podForAddedAddress := &v1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      pod.pod,
-						Namespace: pod.namespace,
-						Labels: map[string]string{
-							pkgK8s.ProxyReplicationControllerLabel: pod.replicationController,
-						},
-					},
-					Status: v1.PodStatus{
-						Phase: pod.phase,
-					},
-				}
-
-				backingMap[ipForAddr] = append(backingMap[ipForAddr], podForAddedAddress)
-			}
-			podIndex := func(ip string) ([]*v1.Pod, error) {
-				return backingMap[ip], nil
-			}
-
-			mockGetServer := &mockDestination_GetServer{updatesReceived: []*pb.Update{}}
-			listener := &endpointListener{
-				podsByIp:         podIndex,
-				ownerKindAndName: defaultOwnerKindAndName,
-				labels:           exp.listenerLabels,
-				stream:           mockGetServer,
-			}
-
-			listener.Update([]common.TcpAddress{exp.address}, nil)
-
-			actualGlobalMetricLabels := mockGetServer.updatesReceived[0].GetAdd().MetricLabels
-			if !reflect.DeepEqual(actualGlobalMetricLabels, exp.listenerLabels) {
-				t.Fatalf("Expected global metric labels sent to be [%v] but was [%v]", exp.listenerLabels, actualGlobalMetricLabels)
-			}
-
-			actualAddedAddressMetricLabels := mockGetServer.updatesReceived[0].GetAdd().Addrs[0].MetricLabels
-			if !reflect.DeepEqual(actualAddedAddressMetricLabels, exp.addressLabels) {
-				t.Fatalf("Expected global metric labels sent to be [%v] but was [%v]", exp.addressLabels, actualAddedAddressMetricLabels)
-			}
 		}
 	})
 }

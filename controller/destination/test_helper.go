@@ -4,6 +4,7 @@ import (
 	"context"
 
 	common "github.com/runconduit/conduit/controller/gen/common"
+	"k8s.io/api/core/v1"
 )
 
 // implements the updateListener interface
@@ -16,8 +17,10 @@ type collectUpdateListener struct {
 	stopCh            chan struct{}
 }
 
-func (c *collectUpdateListener) Update(add []common.TcpAddress, remove []common.TcpAddress) {
-	c.added = append(c.added, add...)
+func (c *collectUpdateListener) Update(add map[common.TcpAddress]*v1.Pod, remove []common.TcpAddress) {
+	for a := range add {
+		c.added = append(c.added, a)
+	}
 	c.removed = append(c.removed, remove...)
 }
 

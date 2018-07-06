@@ -3,17 +3,15 @@ package destination
 import (
 	common "github.com/runconduit/conduit/controller/gen/common"
 	pb "github.com/runconduit/conduit/controller/gen/proxy/destination"
-	"github.com/runconduit/conduit/pkg/addr"
 	pkgK8s "github.com/runconduit/conduit/pkg/k8s"
 	log "github.com/sirupsen/logrus"
 	coreV1 "k8s.io/api/core/v1"
 )
 
-type podsByIpFn func(string) ([]*coreV1.Pod, error)
 type ownerKindAndNameFn func(*coreV1.Pod) (string, string)
 
 type updateListener interface {
-	Update(add []common.TcpAddress, remove []common.TcpAddress)
+	Update(add map[common.TcpAddress]*coreV1.Pod, remove []common.TcpAddress)
 	ClientClose() <-chan struct{}
 	ServerClose() <-chan struct{}
 	NoEndpoints(exists bool)
@@ -24,7 +22,6 @@ type updateListener interface {
 // implements the updateListener interface
 type endpointListener struct {
 	stream           pb.Destination_GetServer
-	podsByIp         podsByIpFn
 	ownerKindAndName ownerKindAndNameFn
 	labels           map[string]string
 	enableTLS        bool
@@ -33,13 +30,11 @@ type endpointListener struct {
 
 func newEndpointListener(
 	stream pb.Destination_GetServer,
-	podsByIp podsByIpFn,
 	ownerKindAndName ownerKindAndNameFn,
 	enableTLS bool,
 ) *endpointListener {
 	return &endpointListener{
 		stream:           stream,
-		podsByIp:         podsByIp,
 		ownerKindAndName: ownerKindAndName,
 		labels:           make(map[string]string),
 		enableTLS:        enableTLS,
@@ -68,7 +63,7 @@ func (l *endpointListener) SetServiceId(id *serviceId) {
 	}
 }
 
-func (l *endpointListener) Update(add []common.TcpAddress, remove []common.TcpAddress) {
+func (l *endpointListener) Update(add map[common.TcpAddress]*coreV1.Pod, remove []common.TcpAddress) {
 	if len(add) > 0 {
 		update := &pb.Update{
 			Update: &pb.Update_Add{
@@ -104,10 +99,10 @@ func (l *endpointListener) NoEndpoints(exists bool) {
 	l.stream.Send(update)
 }
 
-func (l *endpointListener) toWeightedAddrSet(endpoints []common.TcpAddress) *pb.WeightedAddrSet {
+func (l *endpointListener) toWeightedAddrSet(endpoints map[common.TcpAddress]*coreV1.Pod) *pb.WeightedAddrSet {
 	addrs := make([]*pb.WeightedAddr, 0)
-	for _, address := range endpoints {
-		addrs = append(addrs, l.toWeightedAddr(address))
+	for address, pod := range endpoints {
+		addrs = append(addrs, l.toWeightedAddr(address, pod))
 	}
 
 	return &pb.WeightedAddrSet{
@@ -116,35 +111,15 @@ func (l *endpointListener) toWeightedAddrSet(endpoints []common.TcpAddress) *pb.
 	}
 }
 
-func (l *endpointListener) toWeightedAddr(address common.TcpAddress) *pb.WeightedAddr {
-	var tlsIdentity *pb.TlsIdentity
-	metricLabelsForPod := map[string]string{}
-	ipAsString := addr.IPToString(address.Ip)
-
-	resultingPods, err := l.podsByIp(ipAsString)
-	if err != nil {
-		log.Errorf("Error while finding pod for IP [%s], this IP will be sent with no metric labels: %v", ipAsString, err)
-	} else {
-		podFound := false
-		for _, pod := range resultingPods {
-			if pod.Status.Phase == coreV1.PodRunning {
-				podFound = true
-				metricLabelsForPod = pkgK8s.GetOwnerLabels(pod.ObjectMeta)
-				metricLabelsForPod["pod"] = pod.Name
-				tlsIdentity = l.toTlsIdentity(pod)
-				break
-			}
-		}
-		if !podFound {
-			log.Errorf("Could not find running pod for IP [%s], this IP will be sent with no metric labels.", ipAsString)
-		}
-	}
+func (l *endpointListener) toWeightedAddr(address common.TcpAddress, pod *coreV1.Pod) *pb.WeightedAddr {
+	metricLabelsForPod := pkgK8s.GetOwnerLabels(pod.ObjectMeta)
+	metricLabelsForPod["pod"] = pod.Name
 
 	return &pb.WeightedAddr{
 		Addr:         &address,
 		Weight:       1,
 		MetricLabels: metricLabelsForPod,
-		TlsIdentity:  tlsIdentity,
+		TlsIdentity:  l.toTlsIdentity(pod),
 	}
 }
 
